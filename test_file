@@ -1,0 +1,23 @@
+import "fmt"
+
+type testRecord = {
+	testVal: int
+	mut anotherTest: string
+}
+
+fn main() {
+	let record = {
+		testVal: 1,
+		anotherTest: "Hello World"
+	}
+
+	|> fn (x) {
+		x.anotherTest = "Hello Again"
+		x
+	}
+	|> fmt.Println
+}
+
+pub fn test(testValue: testRecord) -> int {
+	testValue.testVal
+}
