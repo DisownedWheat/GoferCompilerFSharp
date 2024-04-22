@@ -53,7 +53,6 @@ type TokenType =
     | Range of Token
     | Comment of Token
     | ReturnType of Token
-    | Whitespace of Token
     | ErrorToken of Token
 
 type LexerState =
@@ -191,6 +190,7 @@ let matchChar char state =
          | '[' -> Token LBracket
          | ']' -> Token RBracket
          | '@' -> Token PropertyAccess
+         | ':'
          | '|'
          | '.' -> CharToken
          | _ -> IgnoreToken(checkWhitespace state char))
