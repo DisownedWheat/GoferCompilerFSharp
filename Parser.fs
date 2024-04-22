@@ -59,7 +59,8 @@ and FunctionDefinition =
     { Name: string
       Args: FunctionArg list
       ReturnType: TypeDeclaration option
-      Body: ASTNode }
+      Body: ASTNode
+      Struct: TypeDeclaration option }
 
 and ASTNode =
     | Root of Root
@@ -68,6 +69,8 @@ and ASTNode =
     | FuncDef of FunctionDefinition
     | Let of LetDefinition
     | Block of LogicBlock
+    | TypeLiteral of TypeDeclaration
+    | TypeDefinition of string * ASTNode
     | ParenExpression of ASTNode
     | ArrayLiteral of ASTNode list
     | RecordType of RecordDefinition
@@ -108,13 +111,13 @@ let updateState (token: Lexer.Token) tokens =
       Column = token.Column
       Tokens = tokens }
 
-let rec ignoreWhitespace ignoreNewlines tokens =
-    match tokens, ignoreNewlines with
-    | [], _ -> []
-    | Lexer.NewLine _ :: tail, true -> ignoreWhitespace ignoreNewlines tail
-    | Lexer.Whitespace _ :: tail, _ -> ignoreWhitespace ignoreNewlines tail
+let rec ignoreNewlines tokens =
+    match tokens with
+    | [] -> []
+    | Lexer.NewLine _ :: tail -> ignoreNewlines tail
     | _ -> tokens
 
+[<TailCall>]
 let rec parseImport state =
     match state.Tokens with
     | Lexer.String x :: Lexer.NewLine _ :: tail -> (updateState x tail), GoImport { ModuleName = x.Value; Alias = None }
@@ -126,7 +129,7 @@ let rec parseImport state =
     | Lexer.Identifier x :: Lexer.NewLine tok :: tail -> (updateState tok tail), Import { ModuleName = x.Value }
     | _ -> raiseParserError state "Invalid import statement" None
 
-and parseParenExpression state =
+and [<TailCall>] parseParenExpression state =
     let delim =
         FuncDelim(fun x ->
             match x with
@@ -134,9 +137,14 @@ and parseParenExpression state =
             | _ -> false)
 
     let newState, node = parseTree state delim
-    newState, ParenExpression node
 
-and parseBraceExpression state =
+    match newState.Tokens with
+    | Lexer.Function x :: remaining ->
+        let newState, fn = parseFunction <| updateState x remaining
+        newState, FuncDef { fn with Struct = node }
+    | _ -> newState, ParenExpression node
+
+and [<TailCall>] parseBraceExpression state =
     let delim =
         FuncDelim(fun x ->
             match x with
@@ -146,8 +154,8 @@ and parseBraceExpression state =
     let newState, nodes = recParseTree state delim []
     newState, Block nodes
 
-and parseRecord state properties =
-    match ignoreWhitespace true state.Tokens with
+and [<TailCall>] parseRecord state properties =
+    match ignoreNewlines state.Tokens with
     | [] -> state, RecordLiteral properties
     | Lexer.RBrace x :: tail' -> (updateState x tail'), RecordLiteral properties
     | Lexer.Identifier x :: Lexer.Colon _ :: _ ->
@@ -162,14 +170,16 @@ and parseRecord state properties =
              :: properties)
     | _ -> raiseParserError state "Invalid record literal" (List.tryHead state.Tokens)
 
-and parseRecordType state' =
+and [<TailCall>] parseRecordType state' =
     let checkForComma previousWasComma property =
         match previousWasComma, property with
         | false, Some _ -> true
         | _ -> false
 
     let rec parse previousWasComma state fields =
-        match ignoreWhitespace true state.Tokens with
+        printfn "Fields: %A" fields
+
+        match state.Tokens with
         | [] -> state, List.rev fields
         | Lexer.NewLine x :: remaining -> parse previousWasComma (updateState x remaining) fields
         | Lexer.Comma x :: remaining ->
@@ -208,17 +218,21 @@ and parseRecordType state' =
         | Lexer.Identifier head :: Lexer.Colon _ :: remaining ->
             let newState, typeDec = parseTypeLiteral <| updateState head remaining
 
-            ((updateState head newState.Tokens),
-             (({ Name = head.Value
-                 Mutable' = false
-                 Public' = false },
-               typeDec)
-              :: fields))
-        | _ -> raiseParserError state "Invalid record type" None
+            parse
+                false
+                newState
+                (({ Name = head.Value
+                    Mutable' = false
+                    Public' = false },
+                  typeDec)
+                 :: fields)
+        | _ ->
+            printfn "Tokens: %A\n\n" <| state.Tokens
+            raiseParserError state "Invalid record type" <| List.tryHead state.Tokens
 
     parse false state' []
 
-and parseTypeLiteral state =
+and [<TailCall>] parseTypeLiteral state =
     let (isSlice, tail') =
         match state.Tokens with
         | Lexer.LBracket _ :: Lexer.RBracket _ :: tail' -> true, tail'
@@ -245,14 +259,17 @@ and parseTypeLiteral state =
            Slice = isSlice })
     | _ -> raiseParserError state "Invalid type declaration" <| List.tryHead tail''
 
-and parseTypeDec state =
-    match ignoreWhitespace true state.Tokens with
+and [<TailCall>] parseTypeDec ident state =
+
+    match ignoreNewlines state.Tokens with
     | Lexer.LBrace x :: tail' ->
         let newState, typeDecs = parseRecordType (updateState x tail')
-        newState, RecordType { Fields = typeDecs }
-    | _ -> state, NoOp
+        newState, TypeDefinition(ident, RecordType { Fields = typeDecs })
+    | _ ->
+        let newState, t = parseTypeLiteral state
+        newState, TypeDefinition(ident, TypeLiteral t)
 
-and parseArrayLiteral state =
+and [<TailCall>] parseArrayLiteral state =
     let delim =
         FuncDelim(fun x ->
             match x with
@@ -262,7 +279,9 @@ and parseArrayLiteral state =
     let newState, nodes = recParseTree state delim []
     (newState, ArrayLiteral nodes)
 
-and matchToken state =
+and [<TailCall>] parseFunction state = state, NoOp
+
+and [<TailCall>] matchToken state =
     match state.Tokens with
     | [] -> (state, NoOp)
     | Lexer.Import x :: tail -> parseImport <| updateState x tail
@@ -270,20 +289,23 @@ and matchToken state =
     | Lexer.LBrace x :: tail -> parseBraceExpression <| updateState x tail
     | Lexer.LParen x :: tail -> parseParenExpression <| updateState x tail
     | Lexer.LBracket x :: tail -> parseArrayLiteral <| updateState x tail
+    | Lexer.Function x :: tail -> parseFunction <| updateState x tail
     | Lexer.TypeKeyword _ :: tail ->
-        match ignoreWhitespace true tail with
-        | Lexer.Identifier _ :: Lexer.Assign x :: tail -> parseTypeDec <| updateState x tail
+        match ignoreNewlines tail with
+        | Lexer.Identifier ident :: Lexer.Assign x :: tail -> parseTypeDec ident.Value <| updateState x tail
         | _ -> raiseParserError state "Invalid type declaration" <| List.tryHead tail
-    | _ -> raiseParserError state "Invalid token" <| List.tryHead state.Tokens
+    | _ ->
+        printfn "%A" <| state.Tokens
+        raiseParserError state "Invalid token" <| List.tryHead state.Tokens
 
-and parseTree state delimiter =
+and [<TailCall>] parseTree state delimiter =
     match delimiter, state.Tokens with
     | _, [] -> (state, NoOp)
     | NoDelimiter, _ -> matchToken state
     | FuncDelim f, _ when not (f state.Tokens) -> matchToken state
     | _, _ -> (state, NoOp)
 
-and recParseTree state delimiter children =
+and [<TailCall>] recParseTree state delimiter children =
     match delimiter, state.Tokens with
     | _, [] ->
         let filtered = List.filter filterNoOp children |> List.rev
@@ -298,7 +320,7 @@ and recParseTree state delimiter children =
         let filtered = List.filter filterNoOp children |> List.rev
         (state, filtered)
 
-and recursiveParse state astList =
+and [<TailCall>] recursiveParse state astList =
     match state.Tokens with
     | [] -> [], List.filter filterNoOp astList |> List.rev
     | _ ->
