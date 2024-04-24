@@ -60,7 +60,7 @@ and FunctionDefinition =
       Args: FunctionArg list
       ReturnType: TypeDeclaration option
       Body: ASTNode
-      Struct: TypeDeclaration option }
+      Struct: (string * ASTNode) option }
 
 and ASTNode =
     | Root of Root
@@ -73,8 +73,9 @@ and ASTNode =
     | TypeDefinition of string * ASTNode
     | ParenExpression of ASTNode
     | ArrayLiteral of ASTNode list
-    | RecordType of RecordDefinition
     | RecordLiteral of RecordLiteral
+    | TupleLiteral of TypeDeclaration list
+    | RecordType of RecordDefinition
     | PubDeclaration of ASTNode
     | NoOp
 
@@ -136,13 +137,7 @@ and [<TailCall>] parseParenExpression state =
             | Lexer.RParen _ :: _ -> true
             | _ -> false)
 
-    let newState, node = parseTree state delim
-
-    match newState.Tokens with
-    | Lexer.Function x :: remaining ->
-        let newState, fn = parseFunction <| updateState x remaining
-        newState, FuncDef { fn with Struct = node }
-    | _ -> newState, ParenExpression node
+    parseTree state delim
 
 and [<TailCall>] parseBraceExpression state =
     let delim =
@@ -232,6 +227,10 @@ and [<TailCall>] parseRecordType state' =
 
     parse false state' []
 
+and [<TailCall>] parseTupleLiteral state items =
+    match state.Tokens with
+    | Lexer.RParen x :: tail -> (updateState x tail), TupleLiteral items
+
 and [<TailCall>] parseTypeLiteral state =
     let (isSlice, tail') =
         match state.Tokens with
@@ -262,6 +261,7 @@ and [<TailCall>] parseTypeLiteral state =
 and [<TailCall>] parseTypeDec ident state =
 
     match ignoreNewlines state.Tokens with
+
     | Lexer.LBrace x :: tail' ->
         let newState, typeDecs = parseRecordType (updateState x tail')
         newState, TypeDefinition(ident, RecordType { Fields = typeDecs })
@@ -279,7 +279,115 @@ and [<TailCall>] parseArrayLiteral state =
     let newState, nodes = recParseTree state delim []
     (newState, ArrayLiteral nodes)
 
-and [<TailCall>] parseFunction state = state, NoOp
+and [<TailCall>] parseFunctionArgs state =
+    let rec parse' previousWasComma mut state args =
+        match (state.Tokens, (previousWasComma || (List.length args) < 1)) with
+        | Lexer.RParen x :: tail, _ -> (updateState x tail), args
+        | Lexer.Mut x :: tail, true -> parse' false true (updateState x tail) args
+        | Lexer.Identifier x :: Lexer.Colon _ :: tail, true ->
+            let newState, t = parseTypeLiteral <| updateState x tail
+
+            parse' false false newState
+            <| TypedArg
+                { Name = x.Value
+                  Type = t
+                  mutable' = mut
+                  public' = false }
+               :: args
+        | Lexer.Identifier x :: Lexer.Comma _ :: tail, true ->
+            parse' false false (updateState x tail)
+            <| Arg
+                { Name = x.Value
+                  Mutable' = mut
+                  Public' = false }
+               :: args
+        | Lexer.Comma x :: tail, false -> parse' true false (updateState x tail) args
+        | _ -> raiseParserError state "Invalid function argument" <| List.tryHead state.Tokens
+
+    parse' false false state []
+
+and parseStructMethodDefinition state =
+    match state.Tokens with
+    | Lexer.Identifier x :: tail ->
+        let newState, t = parseTypeDec x.Value <| updateState x tail
+
+        let newState' =
+            { newState with
+                Tokens =
+                    match newState.Tokens with
+                    | Lexer.RParen _ :: tail -> tail
+                    | _ ->
+                        raiseParserError newState "Invalid struct method definition"
+                        <| List.tryHead newState.Tokens }
+
+        newState', (x.Value, t)
+    | _ ->
+        raiseParserError state "Invalid struct method definition"
+        <| List.tryHead state.Tokens
+
+
+and [<TailCall>] parseFunction state =
+    let matchReturnType state =
+        match state.Tokens with
+        | Lexer.ReturnType x :: tail ->
+            let newState, returnType = parseTypeLiteral <| updateState x tail
+            newState, Some returnType
+        | _ -> state, None
+
+    let rec parse' structInfo state =
+
+        match state.Tokens with
+        | Lexer.LParen x :: tail ->
+            try
+                let newState, structInfo = parseStructMethodDefinition <| updateState x tail
+                parse' (Some structInfo) newState
+            with ParseException _ ->
+                match structInfo with
+                | Some _ ->
+                    raiseParserError state "Invalid struct method definition"
+                    <| List.tryHead state.Tokens
+                | _ ->
+                    let newState, args = parseFunctionArgs <| updateState x tail
+                    let newState', returnType = matchReturnType newState
+
+                    match newState'.Tokens with
+                    | Lexer.LBrace x :: tail' ->
+                        let newState', body = parseBraceExpression <| updateState x tail'
+
+                        newState',
+                        FuncDef
+                            { Name = x.Value
+                              Args = args
+                              ReturnType = returnType
+                              Body = body
+                              Struct = structInfo }
+                    | _ ->
+                        raiseParserError newState "Invalid function definition"
+                        <| List.tryHead newState.Tokens
+
+        | Lexer.Identifier x :: Lexer.LParen _ :: tail ->
+            let newState, args = parseFunctionArgs <| updateState x tail
+            let newState', returnType = matchReturnType newState
+
+            match newState'.Tokens with
+            | Lexer.LBrace x :: tail' ->
+                let newState', body = parseBraceExpression <| updateState x tail'
+
+                newState',
+                FuncDef
+                    { Name = x.Value
+                      Args = args
+                      ReturnType = returnType
+                      Body = body
+                      Struct = structInfo }
+            | _ ->
+                raiseParserError newState "Invalid function definition"
+                <| List.tryHead newState.Tokens
+        | _ ->
+            raiseParserError state "Invalid function definition"
+            <| List.tryHead state.Tokens
+
+    parse' None state
 
 and [<TailCall>] matchToken state =
     match state.Tokens with
