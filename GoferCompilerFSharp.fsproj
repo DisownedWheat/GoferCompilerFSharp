@@ -5,6 +5,12 @@
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
 
+<PropertyGroup>
+    <RuntimeIdentifiers>linux-x64;osx-x64;win-x64</RuntimeIdentifiers>
+    <PublishSingleFile>true</PublishSingleFile>
+    <RuntimeCompilerOptions>readytorun</RuntimeCompilerOptions>
+</PropertyGroup>
+
   <ItemGroup>
     <Compile Include="Lexer.fs" />
     <Compile Include="Parser.fs" />
