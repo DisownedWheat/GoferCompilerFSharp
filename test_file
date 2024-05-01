@@ -1,7 +1,7 @@
 import "fmt"
 
 type testRecord = {
-	testVal: int
+	testVal: []*int
 	mut anotherTest: string
 }
 
@@ -16,6 +16,7 @@ fn main() {
 		x
 	}
 	|> fmt.Println
+	return
 }
 
 pub fn test(testValue: testRecord) -> int {
