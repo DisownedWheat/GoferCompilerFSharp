@@ -33,8 +33,8 @@ type TokenType =
     | Pointer of Token
     | Deref of Token
     | Channel of Token
+    | Prepend of Token
     | Append of Token
-    | PropertyAccess of Token
     | NewLine of Token
     | TypeKeyword of Token
     | Pub of Token
@@ -189,7 +189,7 @@ let matchChar char state =
          | '}' -> Token RBrace
          | '[' -> Token LBracket
          | ']' -> Token RBracket
-         | '@' -> Token PropertyAccess
+         | '@' -> Token Append
          | ':'
          | '|'
          | '.' -> CharToken
@@ -228,7 +228,7 @@ let parseText state char =
     | Some '.' ->
         (match char with
          | '.' -> Ok(state |+> (Range(buildToken state ".."), 2))
-         | _ -> state |+> (PropertyAccess(buildToken state "."), 1) |> matchChar char)
+         | _ -> state |+> (Dot(buildToken state "."), 1) |> matchChar char)
     | Some '=' ->
         (match char with
          | '=' -> Ok(state |+> (Equality(buildToken state "=="), 2))
@@ -265,7 +265,7 @@ let parseText state char =
          | _ -> state |+> (TypeSeparator(buildToken state "|"), 1) |> matchChar char)
     | Some ':' ->
         (match char with
-         | ':' -> Ok(state |+> (Append(buildToken state "::"), 2))
+         | ':' -> Ok(state |+> (Prepend(buildToken state "::"), 2))
          | _ -> state |+> (Colon(buildToken state ":"), 1) |> matchChar char)
     | Some '/' ->
         (match char with
