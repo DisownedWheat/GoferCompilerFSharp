@@ -44,6 +44,8 @@ and TypeDeclaration =
 and LetDefinition =
     { Left: IdentifierType; Right: ASTNode }
 
+and Assign = { Left: ASTNode; Right: ASTNode }
+
 and ScopedFunctionArg =
     { Name: string
       Type: string
@@ -62,6 +64,8 @@ and FunctionDefinition =
       Body: ASTNode
       Struct: (string * ASTNode) option }
 
+and FunctionCall = { Name: string; Args: ASTNode list }
+
 and ASTNode =
     | Root of Root
     | GoImport of GoImport
@@ -70,6 +74,7 @@ and ASTNode =
     | Let of LetDefinition
     | Block of LogicBlock
     | LetDefinition of LetDefinition
+    | AssignExpression of Assign
     | TypeLiteral of TypeDeclaration
     | TypeDefinition of string * ASTNode
     | ParenExpression of ASTNode
@@ -81,6 +86,9 @@ and ASTNode =
     | StringLiteral of string
     | NumberLiteral of string
     | PipeExpression of ASTNode list
+    | IdentifierLiteral of IdentifierType
+    | ReturnExpression of ASTNode option
+    | FunctionCallExpression of FunctionCall
     | NoOp
 
 type ParseDelimiter =
@@ -180,7 +188,6 @@ and [<TailCall>] parseRecordType state' =
         | _ -> false
 
     let rec parse previousWasComma state fields =
-        printfn "Fields: %A" fields
 
         match state.Tokens with
         | [] -> state, List.rev fields
@@ -238,6 +245,7 @@ and [<TailCall>] parseRecordType state' =
 and [<TailCall>] parseTupleLiteral state items =
     match state.Tokens with
     | Lexer.RParen x :: tail -> (updateState x tail), TupleLiteral items
+    | _ -> raiseParserError state "Not implemented"
 
 and [<TailCall>] parseTypeLiteral state =
     let (isSlice, tail') =
@@ -281,7 +289,7 @@ and [<TailCall>] parseArrayLiteral state =
     let delim =
         FuncDelim(fun x ->
             match x with
-            | Lexer.RParen _ :: _ -> true
+            | Lexer.RBracket _ :: _ -> true
             | _ -> false)
 
     let newState, nodes = recParseTree state delim []
@@ -291,7 +299,7 @@ and [<TailCall>] parseFunctionArgs state =
     let rec parse' previousWasComma mut state args =
         match (state.Tokens, (previousWasComma || (List.length args) < 1)) with
         | Lexer.RParen x :: tail, _ -> (updateState x tail), args
-        | Lexer.Mut x :: tail, true -> parse' false true (updateState x tail) args
+        | Lexer.Mut x :: tail, true -> parse' previousWasComma true (updateState x tail) args
         | Lexer.Identifier x :: Lexer.Colon _ :: tail, true ->
             let newState, t = parseTypeLiteral <| updateState x tail
 
@@ -302,7 +310,7 @@ and [<TailCall>] parseFunctionArgs state =
                   Mutable' = mut
                   Public' = false }
                :: args
-        | Lexer.Identifier x :: Lexer.Comma _ :: tail, true ->
+        | Lexer.Identifier x :: tail, true ->
             parse' false false (updateState x tail)
             <| Arg
                 { Name = x.Value
@@ -328,8 +336,6 @@ and parseStructMethodDefinition state =
 
         newState', (x.Value, t)
     | _ -> raiseParserError state "Invalid struct method definition"
-
-
 
 and [<TailCall>] parseFunction state =
     let matchReturnType state =
@@ -360,7 +366,7 @@ and [<TailCall>] parseFunction state =
 
                         newState',
                         FuncDef
-                            { Name = x.Value
+                            { Name = ""
                               Args = args
                               ReturnType = returnType
                               Body = body
@@ -373,8 +379,8 @@ and [<TailCall>] parseFunction state =
             let newState', returnType = matchReturnType newState
 
             match newState'.Tokens with
-            | Lexer.LBrace x :: tail' ->
-                let newState', body = parseBraceExpression <| updateState x tail'
+            | Lexer.LBrace brace :: tail' ->
+                let newState', body = parseBraceExpression <| updateState brace tail'
 
                 newState',
                 FuncDef
@@ -386,7 +392,6 @@ and [<TailCall>] parseFunction state =
             | _ -> raiseParserError newState "Invalid function definition"
 
         | _ -> raiseParserError state "Invalid function definition"
-
 
     parse' None state
 
@@ -472,20 +477,50 @@ and [<TailCall>] parseLetExpression state =
 
     newState', LetDefinition { Left = left; Right = right }
 
-and parseIdentifier tok state = state, NoOp
+
+and parseFunctionCall (tok: Lexer.Token) state =
+    let rec parseFunctionArgs state args =
+        match state.Tokens with
+        | Lexer.RParen x :: tail -> (updateState x tail), args
+        | Lexer.Comma x :: tail -> parseFunctionArgs (updateState x tail) args
+        | _ ->
+            matchToken state
+            ||> fun newState node -> parseFunctionArgs newState (node :: args)
+
+    let newState, args = parseFunctionArgs state []
+    newState, FunctionCallExpression { Name = tok.Value; Args = args }
+
+and parseRecordAccess state = state, NoOp
+
+and parseIndexAccess state = state, NoOp
+
+and parseIdentifier (tok: Lexer.Token) state =
+    match state.Tokens with
+    | Lexer.LParen x :: tail -> parseFunctionCall tok <| updateState x tail
+    | Lexer.Dot x :: tail -> parseRecordAccess <| updateState x tail
+    | Lexer.LBracket x :: tail -> parseIndexAccess <| updateState x tail
+    | _ ->
+        state,
+        IdentifierLiteral
+        <| Identifier
+            { Name = tok.Value
+              Mutable' = false
+              Public' = false }
 
 and parsePipe node state =
     let rec parse previousWasPipe state' nodes =
         match previousWasPipe, state'.Tokens with
         | false, Lexer.Pipe x :: tail -> parse true (updateState x tail) nodes
         | false, _ -> state', nodes
-        | true, _ ->
-            let newState, node = matchToken state'
-            parse false newState (node :: nodes)
+        | true, _ -> matchToken state' ||> fun newState node -> parse false newState (node :: nodes)
 
     let newState, nodes = parse false state []
     newState, PipeExpression(node :: (List.rev nodes))
 
+and parseReturn state =
+    match state.Tokens with
+    | Lexer.NewLine x :: tail -> updateState x tail, ReturnExpression None
+    | _ -> matchToken state ||> fun newState node -> newState, ReturnExpression(Some node)
 
 and matchToken state =
     let parse state =
@@ -501,6 +536,8 @@ and matchToken state =
         | Lexer.Identifier x :: tail -> parseIdentifier x <| updateState x tail
         | Lexer.String x :: tail -> updateState x tail, StringLiteral x.Value
         | Lexer.Number x :: tail -> updateState x tail, NumberLiteral x.Value
+        | Lexer.Pub x :: tail -> updateState x tail, NoOp
+        | Lexer.Return x :: tail -> parseReturn <| updateState x tail
         | Lexer.TypeKeyword _ :: tail ->
             match ignoreNewlines tail with
             | Lexer.Identifier ident :: Lexer.Assign x :: tail -> parseTypeDec ident.Value <| updateState x tail
@@ -514,6 +551,10 @@ and matchToken state =
 
     match newState.Tokens with
     | Lexer.Pipe x :: tail -> parsePipe node <| updateState x tail
+    | Lexer.Assign x :: tail ->
+        let newState', right = matchToken <| updateState x tail
+        newState', AssignExpression { Left = node; Right = right }
+
     | _ -> newState, node
 
 and parseTree state delimiter =
@@ -523,11 +564,24 @@ and parseTree state delimiter =
     | FuncDelim f, _ when not (f state.Tokens) -> matchToken state
     | _, _ -> (state, NoOp)
 
+and filterTokensUntilDelimiter delimiter tokens =
+    match delimiter, tokens with
+    | _, [] -> []
+    | NoDelimiter, _ -> ignoreNewlines tokens
+    | FuncDelim f, _ ->
+        match tokens with
+        | [] -> []
+        | head :: tail when f [ head ] -> tail
+        | head :: tail -> head :: filterTokensUntilDelimiter delimiter tail
+
 and [<TailCall>] recParseTree state delimiter children =
     match delimiter, state.Tokens with
     | _, [] ->
         let filtered = List.filter filterNoOp children |> List.rev
-        (state, filtered)
+
+        ({ state with
+            Tokens = filterTokensUntilDelimiter delimiter state.Tokens },
+         filtered)
     | FuncDelim f, _ when not (f state.Tokens) ->
         let state, child = parseTree state delimiter
         recParseTree state delimiter (child :: children)
@@ -536,11 +590,15 @@ and [<TailCall>] recParseTree state delimiter children =
         recParseTree state delimiter (child :: children)
     | _, _ ->
         let filtered = List.filter filterNoOp children |> List.rev
-        (state, filtered)
+
+        ({ state with
+            Tokens = filterTokensUntilDelimiter delimiter state.Tokens },
+         filtered)
 
 and [<TailCall>] recursiveParse state astList =
     match state.Tokens with
     | [] -> [], List.filter filterNoOp astList |> List.rev
+    | Lexer.EOF _ :: _ -> [], List.filter filterNoOp astList |> List.rev
     | _ ->
         let newState, child = parseTree state NoDelimiter
         recursiveParse newState (child :: astList)
