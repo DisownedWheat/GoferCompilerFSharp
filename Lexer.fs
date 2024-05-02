@@ -53,6 +53,7 @@ type TokenType =
     | Range of Token
     | Comment of Token
     | ReturnType of Token
+    | Interface of Token
     | ErrorToken of Token
 
 type LexerState =
@@ -107,6 +108,7 @@ let parseCurrent state =
                 | "return" -> Return token
                 | "import" -> Import token
                 | "match" -> Match token
+                | "interface" -> Interface token
                 | _ -> Identifier token
 
         { state with
