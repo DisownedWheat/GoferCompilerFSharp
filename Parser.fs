@@ -341,8 +341,8 @@ and [<TailCall>] parseFunction state =
     let matchReturnType state =
         match state.Tokens with
         | Lexer.ReturnType x :: tail ->
-            let newState, returnType = parseTypeLiteral <| updateState x tail
-            newState, Some returnType
+            parseTypeLiteral <| updateState x tail
+            ||> fun newState returnType -> newState, Some returnType
         | _ -> state, None
 
     let rec parse' structInfo state =
@@ -356,23 +356,17 @@ and [<TailCall>] parseFunction state =
                 match structInfo with
                 | Some _ -> raiseParserError state "Invalid struct method definition"
 
-                | _ ->
-                    let newState, args = parseFunctionArgs <| updateState x tail
-                    let newState', returnType = matchReturnType newState
-
-                    match newState'.Tokens with
-                    | Lexer.LBrace x :: tail' ->
-                        let newState', body = parseBraceExpression <| updateState x tail'
-
-                        newState',
-                        FuncDef
-                            { Name = ""
-                              Args = args
-                              ReturnType = returnType
-                              Body = body
-                              Struct = structInfo }
-                    | _ -> raiseParserError newState "Invalid function definition"
-
+            match newState'.Tokens with
+            | Lexer.LBrace x :: tail' ->
+                parseBraceExpression <| updateState x tail'
+                ||> fun newState' body ->
+                    newState',
+                    FuncDef
+                        { Name = ""
+                          Args = List.rev args
+                          ReturnType = returnType
+                          Body = body }
+            | _ -> raiseParserError newState "Invalid function definition"
 
         | Lexer.Identifier x :: Lexer.LParen _ :: tail ->
             let newState, args = parseFunctionArgs <| updateState x tail
@@ -447,14 +441,14 @@ and [<TailCall>] parseLetExpression state =
     let parseLeft state =
         match state.Tokens with
         | Lexer.Identifier x :: Lexer.Colon y :: tail ->
-            let newState, type' = parseTypeLiteral <| updateState y tail
-
-            newState,
-            TypedIdentifier
-                { Name = x.Value
-                  Type = type'
-                  Mutable' = false
-                  Public' = false }
+            parseTypeLiteral <| updateState y tail
+            ||> fun newState type' ->
+                newState,
+                TypedIdentifier
+                    { Name = x.Value
+                      Type = type'
+                      Mutable' = false
+                      Public' = false }
         | Lexer.Identifier x :: Lexer.Assign y :: tail ->
             updateState y tail,
             Identifier
@@ -479,15 +473,13 @@ and [<TailCall>] parseLetExpression state =
 
 
 and parseFunctionCall (tok: Lexer.Token) state =
-    let rec parseFunctionArgs state args =
+    let rec parseArgs state args =
         match state.Tokens with
         | Lexer.RParen x :: tail -> (updateState x tail), args
-        | Lexer.Comma x :: tail -> parseFunctionArgs (updateState x tail) args
-        | _ ->
-            matchToken state
-            ||> fun newState node -> parseFunctionArgs newState (node :: args)
+        | Lexer.Comma x :: tail -> parseArgs (updateState x tail) args
+        | _ -> matchToken state ||> fun newState node -> parseArgs newState (node :: args)
 
-    let newState, args = parseFunctionArgs state []
+    let newState, args = parseArgs state []
     newState, FunctionCallExpression { Name = tok.Value; Args = args }
 
 and parseRecordAccess state = state, NoOp
