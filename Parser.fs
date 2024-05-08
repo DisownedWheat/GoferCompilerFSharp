@@ -130,7 +130,6 @@ let rec ignoreNewlines tokens =
     | Lexer.NewLine _ :: tail -> ignoreNewlines tail
     | _ -> tokens
 
-[<TailCall>]
 let rec parseImport state =
     match state.Tokens with
     | Lexer.String x :: Lexer.NewLine _ :: tail -> (updateState x tail), GoImport { ModuleName = x.Value; Alias = None }
@@ -142,7 +141,7 @@ let rec parseImport state =
     | Lexer.Identifier x :: Lexer.NewLine tok :: tail -> (updateState tok tail), Import { ModuleName = x.Value }
     | _ -> raiseParserError state "Invalid import statement"
 
-and [<TailCall>] parseParenExpression state =
+and parseParenExpression state =
     let delim =
         FuncDelim(fun x ->
             match x with
@@ -151,7 +150,7 @@ and [<TailCall>] parseParenExpression state =
 
     parseTree state delim
 
-and [<TailCall>] parseBraceExpression state =
+and parseBraceExpression state =
     match ignoreNewlines state.Tokens with
     | Lexer.Identifier _ :: Lexer.Colon _ :: _ -> parseRecord state []
     | _ ->
@@ -181,7 +180,7 @@ and [<TailCall>] parseRecord state properties =
              :: properties)
     | _ -> raiseParserError state "Invalid record literal"
 
-and [<TailCall>] parseRecordType state' =
+and parseRecordType state' =
     let checkForComma previousWasComma property =
         match previousWasComma, property with
         | false, Some _ -> true
@@ -242,12 +241,12 @@ and [<TailCall>] parseRecordType state' =
 
     parse false state' []
 
-and [<TailCall>] parseTupleLiteral state items =
+and parseTupleLiteral state items =
     match state.Tokens with
     | Lexer.RParen x :: tail -> (updateState x tail), TupleLiteral items
     | _ -> raiseParserError state "Not implemented"
 
-and [<TailCall>] parseTypeLiteral state =
+and parseTypeLiteral state =
     let (isSlice, tail') =
         match state.Tokens with
         | Lexer.LBracket _ :: Lexer.RBracket _ :: tail' -> true, tail'
@@ -274,7 +273,7 @@ and [<TailCall>] parseTypeLiteral state =
            Slice = isSlice })
     | _ -> raiseParserError state "Invalid type declaration"
 
-and [<TailCall>] parseTypeDec ident state =
+and parseTypeDec ident state =
 
     match ignoreNewlines state.Tokens with
 
@@ -285,7 +284,7 @@ and [<TailCall>] parseTypeDec ident state =
         let newState, t = parseTypeLiteral state
         newState, TypeDefinition(ident, TypeLiteral t)
 
-and [<TailCall>] parseArrayLiteral state =
+and parseArrayLiteral state =
     let delim =
         FuncDelim(fun x ->
             match x with
@@ -295,7 +294,7 @@ and [<TailCall>] parseArrayLiteral state =
     let newState, nodes = recParseTree state delim []
     (newState, ArrayLiteral nodes)
 
-and [<TailCall>] parseFunctionArgs state =
+and parseFunctionArgs state =
     let rec parse' previousWasComma mut state args =
         match (state.Tokens, (previousWasComma || (List.length args) < 1)) with
         | Lexer.RParen x :: tail, _ -> (updateState x tail), args
@@ -337,7 +336,7 @@ and parseStructMethodDefinition state =
         newState', (x.Value, t)
     | _ -> raiseParserError state "Invalid struct method definition"
 
-and [<TailCall>] parseFunction state =
+and parseFunction state =
     let matchReturnType state =
         match state.Tokens with
         | Lexer.ReturnType x :: tail ->
@@ -389,7 +388,7 @@ and [<TailCall>] parseFunction state =
 
     parse' None state
 
-and [<TailCall>] parseLetExpression state =
+and parseLetExpression state =
     let rec parseDestructure delim t' args state' =
         match state'.Tokens with
         | Lexer.Identifier x :: Lexer.Comma c :: remaining ->
