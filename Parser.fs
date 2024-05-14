@@ -354,18 +354,22 @@ and parseFunction state =
             with ParseException _ ->
                 match structInfo with
                 | Some _ -> raiseParserError state "Invalid struct method definition"
+                | None ->
+                    let newState, args = parseFunctionArgs <| updateState x tail
+                    let newState', returnType = matchReturnType newState
 
-            match newState'.Tokens with
-            | Lexer.LBrace x :: tail' ->
-                parseBraceExpression <| updateState x tail'
-                ||> fun newState' body ->
-                    newState',
-                    FuncDef
-                        { Name = ""
-                          Args = List.rev args
-                          ReturnType = returnType
-                          Body = body }
-            | _ -> raiseParserError newState "Invalid function definition"
+                    match newState'.Tokens with
+                    | Lexer.LBrace x :: tail' ->
+                        parseBraceExpression <| updateState x tail'
+                        ||> fun newState' body ->
+                            newState',
+                            FuncDef
+                                { Name = ""
+                                  Args = List.rev args
+                                  ReturnType = returnType
+                                  Body = body
+                                  Struct = None }
+                    | _ -> raiseParserError newState "Invalid function definition"
 
         | Lexer.Identifier x :: Lexer.LParen _ :: tail ->
             let newState, args = parseFunctionArgs <| updateState x tail
@@ -513,40 +517,38 @@ and parseReturn state =
     | Lexer.NewLine x :: tail -> updateState x tail, ReturnExpression None
     | _ -> matchToken state ||> fun newState node -> newState, ReturnExpression(Some node)
 
-and matchToken state =
-    let parse state =
-        match state.Tokens with
-        | [] -> (state, NoOp)
-        | Lexer.Import x :: tail -> parseImport <| updateState x tail
-        | Lexer.NewLine x :: tail -> ((updateState x tail), NoOp)
-        | Lexer.LBrace x :: tail -> parseBraceExpression <| updateState x tail
-        | Lexer.LParen x :: tail -> parseParenExpression <| updateState x tail
-        | Lexer.LBracket x :: tail -> parseArrayLiteral <| updateState x tail
-        | Lexer.Function x :: tail -> parseFunction <| updateState x tail
-        | Lexer.Let x :: tail -> parseLetExpression <| updateState x tail
-        | Lexer.Identifier x :: tail -> parseIdentifier x <| updateState x tail
-        | Lexer.String x :: tail -> updateState x tail, StringLiteral x.Value
-        | Lexer.Number x :: tail -> updateState x tail, NumberLiteral x.Value
-        | Lexer.Pub x :: tail -> updateState x tail, NoOp
-        | Lexer.Return x :: tail -> parseReturn <| updateState x tail
-        | Lexer.TypeKeyword _ :: tail ->
-            match ignoreNewlines tail with
-            | Lexer.Identifier ident :: Lexer.Assign x :: tail -> parseTypeDec ident.Value <| updateState x tail
-            | _ -> raiseParserError state "Invalid type declaration"
-        | _ ->
-            printfn "%A" <| state.Tokens
-            raiseParserError state "Invalid token"
-
-    // Check for pipe operator
-    let newState, node = parse state
-
-    match newState.Tokens with
+and parsePostFix state node =
+    match state.Tokens with
     | Lexer.Pipe x :: tail -> parsePipe node <| updateState x tail
     | Lexer.Assign x :: tail ->
         let newState', right = matchToken <| updateState x tail
         newState', AssignExpression { Left = node; Right = right }
+    | _ -> state, node
 
-    | _ -> newState, node
+
+and matchToken state =
+    match state.Tokens with
+    | [] -> (state, NoOp)
+    | Lexer.Import x :: tail -> parseImport <| updateState x tail
+    | Lexer.NewLine x :: tail -> ((updateState x tail), NoOp)
+    | Lexer.LBrace x :: tail -> parseBraceExpression <| updateState x tail
+    | Lexer.LParen x :: tail -> parseParenExpression <| updateState x tail
+    | Lexer.LBracket x :: tail -> parseArrayLiteral <| updateState x tail
+    | Lexer.Function x :: tail -> parseFunction <| updateState x tail
+    | Lexer.Let x :: tail -> parseLetExpression <| updateState x tail
+    | Lexer.Identifier x :: tail -> parseIdentifier x <| updateState x tail
+    | Lexer.String x :: tail -> updateState x tail, StringLiteral x.Value
+    | Lexer.Number x :: tail -> updateState x tail, NumberLiteral x.Value
+    | Lexer.Pub x :: tail -> updateState x tail, NoOp
+    | Lexer.Return x :: tail -> parseReturn <| updateState x tail
+    | Lexer.TypeKeyword _ :: tail ->
+        match ignoreNewlines tail with
+        | Lexer.Identifier ident :: Lexer.Assign x :: tail -> parseTypeDec ident.Value <| updateState x tail
+        | _ -> raiseParserError state "Invalid type declaration"
+    | _ ->
+        printfn "%A" <| state.Tokens
+        raiseParserError state "Invalid token"
+    ||> parsePostFix
 
 and parseTree state delimiter =
     match delimiter, state.Tokens with
