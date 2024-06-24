@@ -5,6 +5,10 @@ type testRecord = {
 	mut anotherTest: string
 }
 
+// pub fn (t *testRecord) getValue() {
+// 	t.testVal
+// }
+
 fn main() {
 	let record = {
 		testVal: 1,

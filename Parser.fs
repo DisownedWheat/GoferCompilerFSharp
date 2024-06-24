@@ -41,8 +41,14 @@ and TypeDeclaration =
       Pointer: bool
       Slice: bool }
 
-and LetDefinition =
+and LetStatement =
     { Left: IdentifierType; Right: ASTNode }
+
+and AssignStatement = { Left: ASTNode; Right: ASTNode }
+
+and Assignment =
+    | Let of LetStatement
+    | Assign of AssignStatement
 
 and Assign = { Left: ASTNode; Right: ASTNode }
 
@@ -71,10 +77,11 @@ and ASTNode =
     | GoImport of GoImport
     | Import of GoferImport
     | FuncDef of FunctionDefinition
-    | Let of LetDefinition
+    | FunctionStatement of FunctionDefinition // Top level function definitions
+    | AssignmentStatement of Assignment
     | Block of LogicBlock
-    | LetDefinition of LetDefinition
     | AssignExpression of Assign
+    | IndexExpression of ASTNode
     | TypeLiteral of TypeDeclaration
     | TypeDefinition of string * ASTNode
     | ParenExpression of ASTNode
@@ -472,7 +479,7 @@ and parseLetExpression state =
             | _ -> newState
         )
 
-    newState', LetDefinition { Left = left; Right = right }
+    newState', AssignmentStatement <| Let { Left = left; Right = right }
 
 
 and parseFunctionCall (tok: Lexer.Token) state =
@@ -502,7 +509,7 @@ and parseIdentifier (tok: Lexer.Token) state =
               Mutable' = false
               Public' = false }
 
-and parsePipe node state =
+and parsePipe state node =
     let rec parse previousWasPipe state' nodes =
         match previousWasPipe, state'.Tokens with
         | false, Lexer.Pipe x :: tail -> parse true (updateState x tail) nodes
@@ -517,38 +524,58 @@ and parseReturn state =
     | Lexer.NewLine x :: tail -> updateState x tail, ReturnExpression None
     | _ -> matchToken state ||> fun newState node -> newState, ReturnExpression(Some node)
 
-and parsePostFix state node =
-    match state.Tokens with
-    | Lexer.Pipe x :: tail -> parsePipe node <| updateState x tail
-    | Lexer.Assign x :: tail ->
-        let newState', right = matchToken <| updateState x tail
-        newState', AssignExpression { Left = node; Right = right }
-    | _ -> state, node
+and parseSuffix state node =
+    let rec parse' assigned state node =
+        match ignoreNewlines state.Tokens with
+        | Lexer.Pipe x :: tail -> parse' assigned <|| parsePipe (updateState x tail) node
+        | Lexer.Dot x :: tail -> parse' assigned <|| parseRecordAccess (updateState x tail)
+        | Lexer.Assign x :: tail ->
+            if assigned then
+                raiseParserError state "Invalid assignment"
+            else
+                let newState', right = matchToken <| updateState x tail
+                parse' true newState' (AssignExpression { Left = node; Right = right })
+        | Lexer.LBracket x :: tail ->
+            // TODO: Fix this to use IndexExpression
+            let newState', right = matchToken <| updateState x tail
+            parse' assigned newState' (AssignExpression { Left = node; Right = right })
+        | Lexer.LParen x :: tail ->
+            let newState', right = matchToken <| updateState x tail
+            parse' assigned newState' (FunctionCallExpression { Name = ""; Args = [ node; right ] })
+        | _ -> state, node
 
+    parse' false state node
+
+and parseComment state =
+    match state.Tokens with
+    | [] as x -> matchToken { state with Tokens = x }
+    | Lexer.NewLine x :: tail -> matchToken <| updateState x tail
+    | _ :: tail -> parseComment { state with Tokens = tail }
 
 and matchToken state =
-    match state.Tokens with
-    | [] -> (state, NoOp)
-    | Lexer.Import x :: tail -> parseImport <| updateState x tail
-    | Lexer.NewLine x :: tail -> ((updateState x tail), NoOp)
-    | Lexer.LBrace x :: tail -> parseBraceExpression <| updateState x tail
-    | Lexer.LParen x :: tail -> parseParenExpression <| updateState x tail
-    | Lexer.LBracket x :: tail -> parseArrayLiteral <| updateState x tail
-    | Lexer.Function x :: tail -> parseFunction <| updateState x tail
-    | Lexer.Let x :: tail -> parseLetExpression <| updateState x tail
-    | Lexer.Identifier x :: tail -> parseIdentifier x <| updateState x tail
-    | Lexer.String x :: tail -> updateState x tail, StringLiteral x.Value
-    | Lexer.Number x :: tail -> updateState x tail, NumberLiteral x.Value
-    | Lexer.Pub x :: tail -> updateState x tail, NoOp
-    | Lexer.Return x :: tail -> parseReturn <| updateState x tail
-    | Lexer.TypeKeyword _ :: tail ->
-        match ignoreNewlines tail with
-        | Lexer.Identifier ident :: Lexer.Assign x :: tail -> parseTypeDec ident.Value <| updateState x tail
-        | _ -> raiseParserError state "Invalid type declaration"
-    | _ ->
-        printfn "%A" <| state.Tokens
-        raiseParserError state "Invalid token"
-    ||> parsePostFix
+    parseSuffix
+    <|| match state.Tokens with
+        | [] -> (state, NoOp)
+        | Lexer.Import x :: tail -> parseImport <| updateState x tail
+        | Lexer.NewLine x :: tail -> ((updateState x tail), NoOp)
+        | Lexer.LBrace x :: tail -> parseBraceExpression <| updateState x tail
+        | Lexer.LParen x :: tail -> parseParenExpression <| updateState x tail
+        | Lexer.LBracket x :: tail -> parseArrayLiteral <| updateState x tail
+        | Lexer.Function x :: tail -> parseFunction <| updateState x tail
+        | Lexer.Let x :: tail -> parseLetExpression <| updateState x tail
+        | Lexer.Identifier x :: tail -> parseIdentifier x <| updateState x tail
+        | Lexer.String x :: tail -> updateState x tail, StringLiteral x.Value
+        | Lexer.Number x :: tail -> updateState x tail, NumberLiteral x.Value
+        | Lexer.Pub x :: tail -> updateState x tail, NoOp
+        | Lexer.Return x :: tail -> parseReturn <| updateState x tail
+        | Lexer.Comment x :: tail -> updateState x tail, NoOp
+        | Lexer.TypeKeyword _ :: tail ->
+            match ignoreNewlines tail with
+            | Lexer.Identifier ident :: Lexer.Assign x :: tail -> parseTypeDec ident.Value <| updateState x tail
+            | _ -> raiseParserError state "Invalid type declaration"
+        | _ ->
+            printfn "%A" <| state.Tokens
+            raiseParserError state "Invalid token"
 
 and parseTree state delimiter =
     match delimiter, state.Tokens with
