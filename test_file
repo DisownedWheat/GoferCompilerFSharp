@@ -5,9 +5,9 @@ type testRecord = {
 	mut anotherTest: string
 }
 
-// pub fn (t *testRecord) getValue() {
-// 	t.testVal
-// }
+pub fn (t *testRecord) getValue() {
+	t.testVal
+}
 
 fn main() {
 	let record = {

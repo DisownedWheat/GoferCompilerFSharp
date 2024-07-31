@@ -110,7 +110,7 @@ let filterNoOp x =
 let unexpectedTokenError token =
     match token with
     | Some t ->
-        let msg = sprintf "Unexpected token: %A" t
+        let msg = $"Unexpected token: {t}"
         Error msg
     | None -> Error "Unexpected end of input"
 
@@ -122,7 +122,7 @@ let raiseParserError state msg =
             (List.tryHead state.Tokens),
             state.Line,
             state.Column,
-            sprintf "Parse error: %s at line %d column %d" msg state.Line state.Column
+            $"Parse error: {msg} at line {state.Line} column {state.Column}"
         )
     )
 
